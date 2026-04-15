@@ -9,12 +9,15 @@ import java.nio.charset.StandardCharsets;
 import java.security.Key;
 import java.util.Date;
 import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 @Component
 public class JwtTokenProvider {
 
+    private static final Logger log = LoggerFactory.getLogger(JwtTokenProvider.class);
     private final Key signingKey;
     private final long expirationMs;
 
@@ -52,6 +55,7 @@ public class JwtTokenProvider {
             parseClaims(token);
             return true;
         } catch (JwtException | IllegalArgumentException ex) {
+            log.warn("JWT validation failed: {}", ex.getMessage());
             return false;
         }
     }

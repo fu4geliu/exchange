@@ -1,6 +1,7 @@
 package com.example.customerservice.security;
 
 import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -9,6 +10,8 @@ import java.io.IOException;
 import java.util.Collection;
 import java.util.List;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -19,6 +22,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @Component
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
+    private static final Logger log = LoggerFactory.getLogger(JwtAuthenticationFilter.class);
     private final JwtTokenProvider jwtTokenProvider;
 
     public JwtAuthenticationFilter(JwtTokenProvider jwtTokenProvider) {
@@ -34,7 +38,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         String bearerToken = request.getHeader("Authorization");
         if (StringUtils.hasText(bearerToken) && bearerToken.startsWith("Bearer ")) {
             String token = bearerToken.substring(7);
-            if (jwtTokenProvider.validateToken(token)) {
+            try {
                 Claims claims = jwtTokenProvider.parseClaims(token);
                 String subject = claims.getSubject();
                 String username = claims.get("username", String.class);
@@ -50,7 +54,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 UsernamePasswordAuthenticationToken authentication =
                         new UsernamePasswordAuthenticationToken(authUser, null, authorities);
                 SecurityContextHolder.getContext().setAuthentication(authentication);
+            } catch (JwtException | IllegalArgumentException ex) {
+                log.warn("Rejecting request due to invalid JWT. uri={}, reason={}", request.getRequestURI(), ex.getMessage());
             }
+        } else if (StringUtils.hasText(bearerToken)) {
+            log.warn("Authorization header present but not Bearer format. uri={}", request.getRequestURI());
         }
 
         filterChain.doFilter(request, response);
