@@ -2,7 +2,7 @@
 import { reactive, ref } from 'vue'
 import { request } from '../api/http'
 
-const baseUrl = 'http://localhost:8082'
+const baseUrl = 'http://localhost:9802'
 const form = reactive({
   customerId: '',
   capitalAccountId: '',

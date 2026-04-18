@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { isAccessTokenExpired } from '../api/jwt'
 import MainLayout from '../layouts/MainLayout.vue'
 import LoginView from '../views/LoginView.vue'
 import CustomerOpenView from '../views/CustomerOpenView.vue'
@@ -40,7 +41,7 @@ const router = createRouter({
 
 router.beforeEach((to, _from, next) => {
   const token = localStorage.getItem('accessToken')
-  const isAuthenticated = Boolean(token)
+  const isAuthenticated = Boolean(token) && !isAccessTokenExpired(token)
 
   if (to.meta.requiresAuth && !isAuthenticated) {
     next('/login')

@@ -9,7 +9,7 @@ const password = ref('')
 const loading = ref(false)
 const errorMessage = ref('')
 const successMessage = ref('')
-const backendBaseUrl = 'http://localhost:8081'
+const backendBaseUrl = 'http://localhost:9801'
 
 const handleLogin = async () => {
   errorMessage.value = ''
@@ -25,6 +25,7 @@ const handleLogin = async () => {
   try {
     const data = await request(`${backendBaseUrl}/api/auth/login`, {
       method: 'POST',
+      skipExpiryCheck: true,
       body: JSON.stringify({
         username: username.value.trim(),
         password: password.value.trim(),
