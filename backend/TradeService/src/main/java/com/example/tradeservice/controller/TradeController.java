@@ -1,12 +1,16 @@
 package com.example.tradeservice.controller;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.sql.PreparedStatement;
+import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.support.GeneratedKeyHolder;
+import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -32,214 +36,296 @@ public class TradeController {
     @ResponseStatus(HttpStatus.CREATED)
     @Transactional
     public Map<String, Object> createOrder(@RequestBody OrderRequest request) {
-        Long directionId = findId("select id from dict_trade_direction where direction_code = ?", request.directionCode());
-        Long statusId = findId("select id from dict_order_status where status_code = 'TO_REPORT'");
-        if (statusId == null) {
-            statusId = findId("select id from dict_order_status where status_code = 'UNREPORTED'");
-        }
-        if (statusId == null) {
-            statusId = findId("select id from dict_order_status limit 1");
-        }
-        Long securityId = findId("select id from security_info where security_code = ?", request.securityCode());
-        Long marketId = securityId == null ? null : findId("select market_id from security_info where id = ?", securityId);
-        String accountNumber = jdbcTemplate.query(
-                "select account_number from customer_fund_account where id = ? and customer_id = ?",
-                rs -> rs.next() ? rs.getString(1) : null,
-                request.capitalAccountId(), request.customerId());
-
-        if (directionId == null || statusId == null || securityId == null || marketId == null || accountNumber == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid order input or dictionary data");
+        long customerCode = parseCustomerCode(request.customerCode());
+        String trdId = resolveTrdId(request.directionCode());
+        if (trdId == null || !dictItemExists("TRD_ID", trdId)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "买卖方向无效（使用 BUY/SELL 或 B/S）");
         }
 
-        String orderCode = "O" + UUID.randomUUID().toString().replace("-", "").substring(0, 20).toUpperCase();
+        Map<String, Object> sec = jdbcTemplate.query(
+                "select market from security_info where stk_code = ?",
+                rs -> rs.next() ? Map.of("market", rs.getString("market")) : null,
+                request.securityCode());
+        if (sec == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "证券代码不存在");
+        }
+        String market = (String) sec.get("market");
+
+        Integer exists = jdbcTemplate.queryForObject(
+                "select count(1) from user_info where customer_code = ?", Integer.class, customerCode);
+        if (exists == null || exists == 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "客户代码不存在");
+        }
+
+        long qtyLong = parsePositiveIntegerQty(request.quantity(), "委托数量");
+
+        BigDecimal orderAmount =
+                request.price().multiply(request.quantity()).setScale(2, RoundingMode.HALF_UP);
+
+        KeyHolder keyHolder = new GeneratedKeyHolder();
+        long finalCustomerCode = customerCode;
         jdbcTemplate.update(
-                """
-                insert into order_log
-                (customer_id, account_number, security_id, market_id, order_code, direction_id, price, quantity, traded_quantity, status_id)
-                values (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-                """,
-                request.customerId(), accountNumber, securityId, marketId, orderCode, directionId, request.price(), request.quantity(), statusId);
+                connection -> {
+                    PreparedStatement ps = connection.prepareStatement(
+                            """
+                            insert into order_info
+                            (customer_code, market, stk_code, trd_id, order_price, order_qty, matched_qty, order_amount, order_status, is_withdraw)
+                            values (?, ?, ?, ?, ?, ?, 0, ?, 'A', 'F')
+                            """,
+                            Statement.RETURN_GENERATED_KEYS);
+                    ps.setLong(1, finalCustomerCode);
+                    ps.setString(2, market);
+                    ps.setString(3, request.securityCode());
+                    ps.setString(4, trdId);
+                    ps.setBigDecimal(5, request.price());
+                    ps.setLong(6, qtyLong);
+                    ps.setBigDecimal(7, orderAmount);
+                    return ps;
+                },
+                keyHolder);
 
-        Long orderId = findId("select id from order_log where order_code = ?", orderCode);
-        return Map.of("orderId", orderId, "orderCode", orderCode, "status", "TO_REPORT");
+        Number key = keyHolder.getKey();
+        if (key == null) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "创建委托失败");
+        }
+
+        return Map.of(
+                "orderId", key.longValue(),
+                "orderStatus", "A",
+                "createdAt", LocalDateTime.now().toString());
     }
 
     @PostMapping("/cancel")
     @Transactional
     public Map<String, Object> cancelOrder(@RequestBody CancelRequest request) {
+        long customerCode = parseCustomerCode(request.customerCode());
         Map<String, Object> order = jdbcTemplate.query(
-                "select id, customer_id, security_id, market_id, quantity, traded_quantity from order_log where id = ?",
+                """
+                select order_id, customer_code, order_qty, matched_qty, order_status, is_withdraw
+                from order_info
+                where order_id = ?
+                """,
                 rs -> rs.next()
                         ? Map.of(
-                                "id", rs.getLong("id"),
-                                "customerId", rs.getLong("customer_id"),
-                                "securityId", rs.getLong("security_id"),
-                                "marketId", rs.getLong("market_id"),
-                                "quantity", rs.getBigDecimal("quantity"),
-                                "tradedQuantity", rs.getBigDecimal("traded_quantity"))
+                                "orderId", rs.getLong("order_id"),
+                                "customerCode", rs.getLong("customer_code"),
+                                "orderQty", rs.getLong("order_qty"),
+                                "matchedQty", rs.getLong("matched_qty"),
+                                "orderStatus", rs.getString("order_status"),
+                                "isWithdraw", rs.getString("is_withdraw"))
                         : null,
                 request.orderId());
-        if (order == null || !order.get("customerId").equals(request.customerId())) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found");
+
+        if (order == null || !((Long) order.get("customerCode")).equals(customerCode)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "委托不存在");
         }
 
-        Long canceledStatusId = findId("select id from dict_order_status where status_code = 'CANCELED'");
-        if (canceledStatusId == null) {
-            canceledStatusId = findId("select id from dict_order_status limit 1");
+        String isWithdraw = (String) order.get("isWithdraw");
+        String status = (String) order.get("orderStatus");
+        if (!"F".equals(isWithdraw)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "该委托不可重复撤单");
         }
-        if (canceledStatusId == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Order status dictionary missing");
+        if ("6".equals(status) || "8".equals(status) || "9".equals(status)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "当前委托状态不可撤单");
         }
 
-        jdbcTemplate.update("update order_log set status_id = ? where id = ?", canceledStatusId, request.orderId());
-
-        BigDecimal quantity = (BigDecimal) order.get("quantity");
-        BigDecimal tradedQuantity = (BigDecimal) order.get("tradedQuantity");
-        BigDecimal cancelQuantity = quantity.subtract(tradedQuantity);
-        String cancelCode = "C" + UUID.randomUUID().toString().replace("-", "").substring(0, 20).toUpperCase();
         jdbcTemplate.update(
                 """
-                insert into cancel_log
-                (order_id, customer_id, security_id, market_id, cancel_code, cancel_quantity, status)
-                values (?, ?, ?, ?, ?, ?, 'SUCCESS')
+                update order_info
+                set order_status = '6', is_withdraw = 'T'
+                where order_id = ?
                 """,
-                request.orderId(), request.customerId(), order.get("securityId"), order.get("marketId"), cancelCode, cancelQuantity);
+                request.orderId());
 
-        return Map.of("orderId", request.orderId(), "cancelCode", cancelCode, "status", "CANCELED");
+        jdbcTemplate.update(
+                """
+                insert into withdraw_info (order_id, customer_code, withdraw_reason)
+                values (?, ?, ?)
+                """,
+                request.orderId(),
+                customerCode,
+                "用户撤单");
+
+        return Map.of("orderId", request.orderId(), "orderStatus", "6", "isWithdraw", "T");
     }
 
     @PostMapping("/execute")
     @Transactional
     public Map<String, Object> executeTrade(@RequestBody ExecuteRequest request) {
         Map<String, Object> order = jdbcTemplate.query(
-                "select id, customer_id, security_id, market_id, direction_id, quantity, traded_quantity from order_log where id = ?",
+                """
+                select order_id, customer_code, market, stk_code, trd_id, order_qty, matched_qty
+                from order_info
+                where order_id = ?
+                """,
                 rs -> rs.next()
                         ? Map.of(
-                                "id", rs.getLong("id"),
-                                "customerId", rs.getLong("customer_id"),
-                                "securityId", rs.getLong("security_id"),
-                                "marketId", rs.getLong("market_id"),
-                                "directionId", rs.getLong("direction_id"),
-                                "quantity", rs.getBigDecimal("quantity"),
-                                "tradedQuantity", rs.getBigDecimal("traded_quantity"))
+                                "orderId", rs.getLong("order_id"),
+                                "customerCode", rs.getLong("customer_code"),
+                                "market", rs.getString("market"),
+                                "stkCode", rs.getString("stk_code"),
+                                "trdId", rs.getString("trd_id"),
+                                "orderQty", rs.getLong("order_qty"),
+                                "matchedQty", rs.getLong("matched_qty"))
                         : null,
                 request.orderId());
+
         if (order == null) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found");
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "委托不存在");
         }
 
-        BigDecimal quantity = (BigDecimal) order.get("quantity");
-        BigDecimal tradedQuantity = (BigDecimal) order.get("tradedQuantity");
-        BigDecimal remain = quantity.subtract(tradedQuantity);
-        if (request.tradeQuantity().compareTo(remain) > 0) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Trade quantity exceeds remain quantity");
+        long orderQty = (Long) order.get("orderQty");
+        long matchedQty = (Long) order.get("matchedQty");
+        long remain = orderQty - matchedQty;
+        long tradeQty = parsePositiveIntegerQty(request.tradeQuantity(), "成交数量");
+        if (tradeQty <= 0 || tradeQty > remain) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "成交数量无效或超过剩余数量");
         }
 
-        String tradeCode = "T" + UUID.randomUUID().toString().replace("-", "").substring(0, 20).toUpperCase();
-        BigDecimal amount = request.tradePrice().multiply(request.tradeQuantity());
+        BigDecimal tradeAmount =
+                request.tradePrice().multiply(BigDecimal.valueOf(tradeQty)).setScale(2, RoundingMode.HALF_UP);
+
+        KeyHolder tradeKeys = new GeneratedKeyHolder();
+        jdbcTemplate.update(
+                connection -> {
+                    PreparedStatement ps = connection.prepareStatement(
+                            """
+                            insert into trade_info
+                            (order_id, customer_code, market, stk_code, trd_id, trade_price, trade_qty, trade_amount,
+                             commission_fee, stamp_tax_fee, total_fee)
+                            values (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)
+                            """,
+                            Statement.RETURN_GENERATED_KEYS);
+                    ps.setLong(1, request.orderId());
+                    ps.setLong(2, (Long) order.get("customerCode"));
+                    ps.setString(3, (String) order.get("market"));
+                    ps.setString(4, (String) order.get("stkCode"));
+                    ps.setString(5, (String) order.get("trdId"));
+                    ps.setBigDecimal(6, request.tradePrice());
+                    ps.setLong(7, tradeQty);
+                    ps.setBigDecimal(8, tradeAmount);
+                    return ps;
+                },
+                tradeKeys);
+
+        Number tradeKey = tradeKeys.getKey();
+        long newMatched = matchedQty + tradeQty;
+        String nextStatus = newMatched >= orderQty ? "8" : "7";
+
         jdbcTemplate.update(
                 """
-                insert into trade_log
-                (order_id, customer_id, security_id, market_id, trade_code, direction_id, trade_price, trade_quantity, trade_amount, commission_fee, stamp_tax)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+                update order_info
+                set matched_qty = ?, order_status = ?
+                where order_id = ?
                 """,
-                request.orderId(), order.get("customerId"), order.get("securityId"), order.get("marketId"), tradeCode,
-                order.get("directionId"), request.tradePrice(), request.tradeQuantity(), amount);
-
-        Long tradeId = findId("select id from trade_log where trade_code = ?", tradeCode);
-        BigDecimal newTradedQuantity = tradedQuantity.add(request.tradeQuantity());
-
-        Long filledStatusId = findId("select id from dict_order_status where status_code = 'FILLED'");
-        Long partialStatusId = findId("select id from dict_order_status where status_code = 'PART_FILL'");
-        Long fallbackStatusId = findId("select id from dict_order_status limit 1");
-        Long nextStatusId = newTradedQuantity.compareTo(quantity) >= 0
-                ? (filledStatusId != null ? filledStatusId : fallbackStatusId)
-                : (partialStatusId != null ? partialStatusId : fallbackStatusId);
-
-        jdbcTemplate.update(
-                "update order_log set traded_quantity = ?, status_id = ? where id = ?",
-                newTradedQuantity, nextStatusId, request.orderId());
+                newMatched,
+                nextStatus,
+                request.orderId());
 
         return Map.of(
-                "tradeId", tradeId,
-                "tradeCode", tradeCode,
+                "tradeId", tradeKey != null ? tradeKey.longValue() : 0L,
                 "orderId", request.orderId(),
-                "tradedQuantity", newTradedQuantity,
+                "matchedQty", newMatched,
+                "orderStatus", nextStatus,
                 "updatedAt", LocalDateTime.now().toString());
     }
 
-    @GetMapping("/position/{customerId}/{capitalAccountId}")
-    public List<Map<String, Object>> queryPosition(
-            @PathVariable Long customerId,
-            @PathVariable Long capitalAccountId) {
-        // capitalAccountId 用于接口兼容，这里由 customer_id 关联持仓。
+    @GetMapping("/position/{customerCode}")
+    public List<Map<String, Object>> queryPosition(@PathVariable String customerCode) {
         return jdbcTemplate.queryForList(
                 """
-                select cp.id, si.security_code, si.security_name, cp.total_quantity, cp.available_quantity, cp.frozen_quantity, cp.cost_price
-                from customer_position cp
-                left join security_info si on si.id = cp.security_id
-                where cp.customer_id = ?
-                order by cp.updated_at desc
+                select position_id, market, stk_code, stk_name, hold_qty, available_qty, frozen_qty, avg_cost_price, updated_time
+                from customer_position
+                where customer_code = ?
+                order by updated_time desc
                 """,
-                customerId);
+                parseCustomerCode(customerCode));
     }
 
-    @GetMapping("/orders/{customerId}")
+    @GetMapping("/orders/{customerCode}")
     public List<Map<String, Object>> queryOrders(
-            @PathVariable Long customerId,
+            @PathVariable String customerCode,
             @RequestParam(required = false) Long capitalAccountId,
             @RequestParam(required = false) String securityAccountId) {
-        // capitalAccountId/securityAccountId 暂未参与过滤，保留参数以便前端对齐。
         return jdbcTemplate.queryForList(
                 """
-                select ol.id, ol.order_code, si.security_code, ol.price, ol.quantity, ol.traded_quantity, dos.status_code, ol.order_time
-                from order_log ol
-                left join security_info si on si.id = ol.security_id
-                left join dict_order_status dos on dos.id = ol.status_id
-                where ol.customer_id = ?
-                order by ol.order_time desc
+                select order_id, market, stk_code, trd_id, order_price, order_qty, matched_qty, order_amount,
+                       order_status, is_withdraw, entrust_time
+                from order_info
+                where customer_code = ?
+                order by entrust_time desc
                 """,
-                customerId);
+                parseCustomerCode(customerCode));
     }
 
-    @GetMapping("/trades/{customerId}")
+    @GetMapping("/trades/{customerCode}")
     public List<Map<String, Object>> queryTrades(
-            @PathVariable Long customerId,
+            @PathVariable String customerCode,
             @RequestParam(required = false) Long capitalAccountId,
             @RequestParam(required = false) String securityAccountId) {
-        // capitalAccountId/securityAccountId 暂未参与过滤，保留参数以便前端对齐。
         return jdbcTemplate.queryForList(
                 """
-                select tl.id, tl.trade_code, tl.order_id, si.security_code, tl.trade_price, tl.trade_quantity, tl.trade_amount, tl.trade_time
-                from trade_log tl
-                left join security_info si on si.id = tl.security_id
-                where tl.customer_id = ?
-                order by tl.trade_time desc
+                select trade_id, order_id, market, stk_code, trd_id, trade_price, trade_qty, trade_amount,
+                       commission_fee, stamp_tax_fee, total_fee, trade_time
+                from trade_info
+                where customer_code = ?
+                order by trade_time desc
                 """,
-                customerId);
+                parseCustomerCode(customerCode));
     }
 
-    private Long findId(String sql, Object... args) {
-        return jdbcTemplate.query(sql, rs -> rs.next() ? rs.getLong(1) : null, args);
+    private static long parseCustomerCode(String raw) {
+        if (raw == null || raw.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "客户代码不能为空");
+        }
+        try {
+            return Long.parseLong(raw.trim());
+        } catch (NumberFormatException ex) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "客户代码格式无效", ex);
+        }
+    }
+
+    private static long parsePositiveIntegerQty(BigDecimal qty, String label) {
+        if (qty == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, label + "不能为空");
+        }
+        try {
+            long v = qty.setScale(0, RoundingMode.UNNECESSARY).longValueExact();
+            if (v <= 0) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, label + "须为正整数");
+            }
+            return v;
+        } catch (ArithmeticException ex) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, label + "须为正整数", ex);
+        }
+    }
+
+    private boolean dictItemExists(String dictCode, String itemCode) {
+        Integer n = jdbcTemplate.queryForObject(
+                "select count(1) from dict_item where dict_code = ? and item_code = ?",
+                Integer.class,
+                dictCode,
+                itemCode);
+        return n != null && n > 0;
+    }
+
+    /** BUY -> B，SELL -> S；也可直接传 B/S */
+    private static String resolveTrdId(String directionCode) {
+        if (directionCode == null) {
+            return null;
+        }
+        String u = directionCode.trim().toUpperCase();
+        return switch (u) {
+            case "BUY", "B" -> "B";
+            case "SELL", "S" -> "S";
+            default -> null;
+        };
     }
 
     public record OrderRequest(
-            Long customerId,
-            Long capitalAccountId,
-            String securityCode,
-            BigDecimal price,
-            BigDecimal quantity,
-            String directionCode) {
-    }
+            String customerCode, String securityCode, BigDecimal price, BigDecimal quantity, String directionCode) {}
 
-    public record CancelRequest(
-            Long orderId,
-            Long customerId) {
-    }
+    public record CancelRequest(Long orderId, String customerCode) {}
 
-    public record ExecuteRequest(
-            Long orderId,
-            BigDecimal tradePrice,
-            BigDecimal tradeQuantity) {
-    }
+    public record ExecuteRequest(Long orderId, BigDecimal tradePrice, BigDecimal tradeQuantity) {}
 }

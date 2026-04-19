@@ -3,7 +3,7 @@ import { reactive, ref } from 'vue'
 import { request } from '../api/http'
 
 const baseUrl = 'http://localhost:9802'
-const form = reactive({ customerId: '', capitalAccountId: '', securityAccountId: '' })
+const form = reactive({ customerCode: '', capitalAccountId: '', securityAccountId: '' })
 const rows = ref([])
 const error = ref('')
 const loading = ref(false)
@@ -12,11 +12,16 @@ const search = async () => {
   loading.value = true
   error.value = ''
   try {
+    const cc = String(form.customerCode).trim()
+    if (!cc) {
+      error.value = '请输入客户代码'
+      return
+    }
     const query = new URLSearchParams()
     if (form.capitalAccountId) query.set('capitalAccountId', form.capitalAccountId)
     if (form.securityAccountId) query.set('securityAccountId', form.securityAccountId)
     const suffix = query.toString() ? `?${query.toString()}` : ''
-    rows.value = await request(`${baseUrl}/api/trade/trades/${Number(form.customerId)}${suffix}`)
+    rows.value = await request(`${baseUrl}/api/trade/trades/${encodeURIComponent(cc)}${suffix}`)
   } catch (e) {
     error.value = e.message || '查询失败'
   } finally {
@@ -28,9 +33,9 @@ const search = async () => {
 <template>
   <section class="page-card">
     <h2>成交记录查询</h2>
-    <p class="desc">根据客户ID查询成交记录，可带资金账户和证券账户筛选。</p>
+    <p class="desc">查询 trade_info（按 customer_code）。</p>
     <form class="form-grid" @submit.prevent="search">
-      <input v-model="form.customerId" placeholder="客户ID（必填）" />
+      <input v-model="form.customerCode" placeholder="客户代码（必填）" />
       <input v-model="form.capitalAccountId" placeholder="资金账户ID（可选）" />
       <input v-model="form.securityAccountId" placeholder="证券账户ID（可选）" />
       <button type="submit" :disabled="loading">{{ loading ? '查询中...' : '查询成交记录' }}</button>

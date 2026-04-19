@@ -33,12 +33,12 @@ const submit = async () => {
 <template>
   <section class="page-card">
     <h2>客户开户</h2>
-    <p class="desc">录入客户名称、证件类别、证件号码、资产账户类别。</p>
+    <p class="desc">对应表 user_info / customer_account / customer_position。证件类型、账户类别使用字典项编码。</p>
     <form class="form-grid" @submit.prevent="submit">
-      <input v-model="form.customerName" placeholder="客户名称（如：张三）" />
-      <input v-model="form.credentialTypeCode" placeholder="证件类别代码（如：ID_CARD）" />
+      <input v-model="form.customerName" placeholder="客户姓名" />
+      <input v-model="form.credentialTypeCode" placeholder="证件类型 ID_TYPE（00 身份证 / 01 护照 / 02 军官证）" />
       <input v-model="form.credentialNumber" placeholder="证件号码" />
-      <input v-model="form.accountCategoryCode" placeholder="账户类别代码（如：RETAIL）" />
+      <input v-model="form.accountCategoryCode" placeholder="资产账户类别 CUACCT_CLS（0 散户 / 1 中户 / 2 大户 / 3 机构）" />
       <button type="submit" :disabled="loading">{{ loading ? '提交中...' : '提交开户' }}</button>
     </form>
 

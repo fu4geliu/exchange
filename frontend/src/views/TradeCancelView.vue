@@ -3,7 +3,7 @@ import { reactive, ref } from 'vue'
 import { request } from '../api/http'
 
 const baseUrl = 'http://localhost:9802'
-const form = reactive({ orderId: '', customerId: '' })
+const form = reactive({ orderId: '', customerCode: '' })
 const result = ref(null)
 const error = ref('')
 const loading = ref(false)
@@ -17,7 +17,7 @@ const submit = async () => {
       method: 'POST',
       body: JSON.stringify({
         orderId: Number(form.orderId),
-        customerId: Number(form.customerId),
+        customerCode: String(form.customerCode).trim(),
       }),
     })
   } catch (e) {
@@ -31,10 +31,10 @@ const submit = async () => {
 <template>
   <section class="page-card">
     <h2>委托撤单</h2>
-    <p class="desc">输入委托ID和客户ID，提交撤单请求。</p>
+    <p class="desc">撤单写入 withdraw_info，并更新 order_info。</p>
     <form class="form-grid" @submit.prevent="submit">
-      <input v-model="form.orderId" placeholder="委托ID" />
-      <input v-model="form.customerId" placeholder="客户ID" />
+      <input v-model="form.orderId" placeholder="委托编号 order_id" />
+      <input v-model="form.customerCode" placeholder="客户代码 customer_code" />
       <button type="submit" :disabled="loading">{{ loading ? '提交中...' : '提交撤单' }}</button>
     </form>
     <p v-if="error" class="error">{{ error }}</p>

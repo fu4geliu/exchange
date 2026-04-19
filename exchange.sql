@@ -109,7 +109,7 @@ CREATE TABLE user_info (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户信息表';
 
 -- =========================
--- 7. 客户账户表
+-- 7. 客户账户表（新增）
 -- =========================
 DROP TABLE IF EXISTS customer_account;
 CREATE TABLE customer_account (

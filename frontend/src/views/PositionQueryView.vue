@@ -3,7 +3,7 @@ import { reactive, ref } from 'vue'
 import { request } from '../api/http'
 
 const baseUrl = 'http://localhost:9802'
-const form = reactive({ customerId: '', capitalAccountId: '' })
+const form = reactive({ customerCode: '' })
 const rows = ref([])
 const error = ref('')
 const loading = ref(false)
@@ -12,7 +12,12 @@ const search = async () => {
   loading.value = true
   error.value = ''
   try {
-    rows.value = await request(`${baseUrl}/api/trade/position/${Number(form.customerId)}/${Number(form.capitalAccountId)}`)
+    const cc = String(form.customerCode).trim()
+    if (!cc) {
+      error.value = '请输入客户代码'
+      return
+    }
+    rows.value = await request(`${baseUrl}/api/trade/position/${encodeURIComponent(cc)}`)
   } catch (e) {
     error.value = e.message || '查询失败'
   } finally {
@@ -24,10 +29,9 @@ const search = async () => {
 <template>
   <section class="page-card">
     <h2>持仓查询</h2>
-    <p class="desc">根据客户ID和资金账户ID查询持仓。</p>
+    <p class="desc">查询 customer_position（按 customer_code）。</p>
     <form class="form-grid" @submit.prevent="search">
-      <input v-model="form.customerId" placeholder="客户ID" />
-      <input v-model="form.capitalAccountId" placeholder="资金账户ID" />
+      <input v-model="form.customerCode" placeholder="客户代码" />
       <button type="submit" :disabled="loading">{{ loading ? '查询中...' : '查询持仓' }}</button>
     </form>
     <p v-if="error" class="error">{{ error }}</p>

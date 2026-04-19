@@ -4,8 +4,7 @@ import { request } from '../api/http'
 
 const baseUrl = 'http://localhost:9802'
 const form = reactive({
-  customerId: '',
-  capitalAccountId: '',
+  customerCode: '',
   securityCode: '',
   price: '',
   quantity: '',
@@ -23,8 +22,7 @@ const submit = async () => {
     result.value = await request(`${baseUrl}/api/trade/order`, {
       method: 'POST',
       body: JSON.stringify({
-        customerId: Number(form.customerId),
-        capitalAccountId: Number(form.capitalAccountId),
+        customerCode: String(form.customerCode).trim(),
         securityCode: form.securityCode,
         price: Number(form.price),
         quantity: Number(form.quantity),
@@ -42,11 +40,10 @@ const submit = async () => {
 <template>
   <section class="page-card">
     <h2>委托下单</h2>
-    <p class="desc">录入买卖委托信息。</p>
+    <p class="desc">委托写入 order_info（客户代码对应 user_info.customer_code）。</p>
     <form class="form-grid" @submit.prevent="submit">
-      <input v-model="form.customerId" placeholder="客户ID" />
-      <input v-model="form.capitalAccountId" placeholder="资金账户ID" />
-      <input v-model="form.securityCode" placeholder="股票代码（如：600000）" />
+      <input v-model="form.customerCode" placeholder="客户代码（开户返回的 customerCode）" />
+      <input v-model="form.securityCode" placeholder="证券代码（如 600446，须存在于 security_info）" />
       <input v-model="form.price" placeholder="委托价格" />
       <input v-model="form.quantity" placeholder="委托数量" />
       <select v-model="form.directionCode">
