@@ -61,6 +61,11 @@ public class TradeController {
 
         BigDecimal orderAmount =
                 request.price().multiply(request.quantity()).setScale(2, RoundingMode.HALF_UP);
+        if ("B".equals(trdId)) {
+            freezeBuyFunds(customerCode, orderAmount);
+        } else {
+            freezeSellShares(customerCode, market, request.securityCode(), qtyLong);
+        }
 
         KeyHolder keyHolder = new GeneratedKeyHolder();
         long finalCustomerCode = customerCode;
@@ -101,7 +106,7 @@ public class TradeController {
         long customerCode = parseCustomerCode(request.customerCode());
         Map<String, Object> order = jdbcTemplate.query(
                 """
-                select order_id, customer_code, order_qty, matched_qty, order_status, is_withdraw
+                select order_id, customer_code, market, stk_code, trd_id, order_price, order_qty, matched_qty, order_status, is_withdraw
                 from order_info
                 where order_id = ?
                 """,
@@ -109,6 +114,10 @@ public class TradeController {
                         ? Map.of(
                                 "orderId", rs.getLong("order_id"),
                                 "customerCode", rs.getLong("customer_code"),
+                                "market", rs.getString("market"),
+                                "stkCode", rs.getString("stk_code"),
+                                "trdId", rs.getString("trd_id"),
+                                "orderPrice", rs.getBigDecimal("order_price"),
                                 "orderQty", rs.getLong("order_qty"),
                                 "matchedQty", rs.getLong("matched_qty"),
                                 "orderStatus", rs.getString("order_status"),
@@ -146,6 +155,8 @@ public class TradeController {
                 customerCode,
                 "用户撤单");
 
+        releaseFreezeOnCancel(order);
+
         return Map.of("orderId", request.orderId(), "orderStatus", "6", "isWithdraw", "T");
     }
 
@@ -154,7 +165,7 @@ public class TradeController {
     public Map<String, Object> executeTrade(@RequestBody ExecuteRequest request) {
         Map<String, Object> order = jdbcTemplate.query(
                 """
-                select order_id, customer_code, market, stk_code, trd_id, order_qty, matched_qty
+                select order_id, customer_code, market, stk_code, trd_id, order_price, order_qty, matched_qty
                 from order_info
                 where order_id = ?
                 """,
@@ -165,6 +176,7 @@ public class TradeController {
                                 "market", rs.getString("market"),
                                 "stkCode", rs.getString("stk_code"),
                                 "trdId", rs.getString("trd_id"),
+                                "orderPrice", rs.getBigDecimal("order_price"),
                                 "orderQty", rs.getLong("order_qty"),
                                 "matchedQty", rs.getLong("matched_qty"))
                         : null,
@@ -207,6 +219,8 @@ public class TradeController {
                     return ps;
                 },
                 tradeKeys);
+
+        settleOnExecute(order, tradeQty, request.tradePrice(), tradeAmount);
 
         Number tradeKey = tradeKeys.getKey();
         long newMatched = matchedQty + tradeQty;
@@ -298,6 +312,247 @@ public class TradeController {
         } catch (ArithmeticException ex) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, label + "须为正整数", ex);
         }
+    }
+
+    private void freezeBuyFunds(long customerCode, BigDecimal orderAmount) {
+        Map<String, Object> account = jdbcTemplate.query(
+                """
+                select cash_balance, frozen_cash
+                from customer_account
+                where customer_code = ?
+                """,
+                rs -> rs.next()
+                        ? Map.of(
+                                "cashBalance", rs.getBigDecimal("cash_balance"),
+                                "frozenCash", rs.getBigDecimal("frozen_cash"))
+                        : null,
+                customerCode);
+        if (account == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "资金账户不存在");
+        }
+        BigDecimal cashBalance = (BigDecimal) account.get("cashBalance");
+        BigDecimal frozenCash = (BigDecimal) account.get("frozenCash");
+        if (cashBalance == null) {
+            cashBalance = BigDecimal.ZERO;
+        }
+        if (frozenCash == null) {
+            frozenCash = BigDecimal.ZERO;
+        }
+        BigDecimal available = cashBalance.subtract(frozenCash);
+        if (available.compareTo(orderAmount) < 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "可用资金不足，无法买入下单");
+        }
+        jdbcTemplate.update(
+                """
+                update customer_account
+                set frozen_cash = frozen_cash + ?
+                where customer_code = ?
+                """,
+                orderAmount,
+                customerCode);
+    }
+
+    private void freezeSellShares(long customerCode, String market, String stkCode, long orderQty) {
+        Map<String, Object> pos = jdbcTemplate.query(
+                """
+                select available_qty
+                from customer_position
+                where customer_code = ? and market = ? and stk_code = ?
+                """,
+                rs -> rs.next() ? Map.of("availableQty", rs.getLong("available_qty")) : null,
+                customerCode,
+                market,
+                stkCode);
+        if (pos == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "未找到该证券持仓，无法卖出下单");
+        }
+        long availableQty = (Long) pos.get("availableQty");
+        if (availableQty < orderQty) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "可卖数量不足，无法卖出下单");
+        }
+        jdbcTemplate.update(
+                """
+                update customer_position
+                set available_qty = available_qty - ?,
+                    frozen_qty = frozen_qty + ?
+                where customer_code = ? and market = ? and stk_code = ?
+                """,
+                orderQty,
+                orderQty,
+                customerCode,
+                market,
+                stkCode);
+    }
+
+    private void releaseFreezeOnCancel(Map<String, Object> order) {
+        String trdId = (String) order.get("trdId");
+        long customerCode = (Long) order.get("customerCode");
+        long orderQty = (Long) order.get("orderQty");
+        long matchedQty = (Long) order.get("matchedQty");
+        long remainQty = orderQty - matchedQty;
+        if (remainQty <= 0) {
+            return;
+        }
+
+        if ("B".equals(trdId)) {
+            BigDecimal orderPrice = (BigDecimal) order.get("orderPrice");
+            BigDecimal releaseFunds =
+                    orderPrice.multiply(BigDecimal.valueOf(remainQty)).setScale(2, RoundingMode.HALF_UP);
+            jdbcTemplate.update(
+                    """
+                    update customer_account
+                    set frozen_cash = case
+                        when frozen_cash >= ? then frozen_cash - ?
+                        else 0
+                    end
+                    where customer_code = ?
+                    """,
+                    releaseFunds,
+                    releaseFunds,
+                    customerCode);
+            return;
+        }
+
+        String market = (String) order.get("market");
+        String stkCode = (String) order.get("stkCode");
+        jdbcTemplate.update(
+                """
+                update customer_position
+                set available_qty = available_qty + ?,
+                    frozen_qty = case
+                        when frozen_qty >= ? then frozen_qty - ?
+                        else 0
+                    end
+                where customer_code = ? and market = ? and stk_code = ?
+                """,
+                remainQty,
+                remainQty,
+                remainQty,
+                customerCode,
+                market,
+                stkCode);
+    }
+
+    private void settleOnExecute(
+            Map<String, Object> order, long tradeQty, BigDecimal tradePrice, BigDecimal tradeAmount) {
+        String trdId = (String) order.get("trdId");
+        long customerCode = (Long) order.get("customerCode");
+        String market = (String) order.get("market");
+        String stkCode = (String) order.get("stkCode");
+
+        if ("B".equals(trdId)) {
+            BigDecimal orderPrice = (BigDecimal) order.get("orderPrice");
+            BigDecimal unfreezeFunds =
+                    orderPrice.multiply(BigDecimal.valueOf(tradeQty)).setScale(2, RoundingMode.HALF_UP);
+            jdbcTemplate.update(
+                    """
+                    update customer_account
+                    set frozen_cash = case
+                            when frozen_cash >= ? then frozen_cash - ?
+                            else 0
+                        end,
+                        cash_balance = cash_balance - ?
+                    where customer_code = ?
+                    """,
+                    unfreezeFunds,
+                    unfreezeFunds,
+                    tradeAmount,
+                    customerCode);
+
+            Map<String, Object> pos = jdbcTemplate.query(
+                    """
+                    select hold_qty, available_qty, avg_cost_price
+                    from customer_position
+                    where customer_code = ? and market = ? and stk_code = ?
+                    """,
+                    rs -> rs.next()
+                            ? Map.of(
+                                    "holdQty", rs.getLong("hold_qty"),
+                                    "availableQty", rs.getLong("available_qty"),
+                                    "avgCostPrice", rs.getBigDecimal("avg_cost_price"))
+                            : null,
+                    customerCode,
+                    market,
+                    stkCode);
+
+            if (pos == null) {
+                String stkName = jdbcTemplate.query(
+                        "select stk_name from security_info where market = ? and stk_code = ?",
+                        rs -> rs.next() ? rs.getString(1) : stkCode,
+                        market,
+                        stkCode);
+                jdbcTemplate.update(
+                        """
+                        insert into customer_position
+                        (customer_code, market, stk_code, stk_name, hold_qty, available_qty, frozen_qty, avg_cost_price)
+                        values (?, ?, ?, ?, ?, ?, 0, ?)
+                        """,
+                        customerCode,
+                        market,
+                        stkCode,
+                        stkName,
+                        tradeQty,
+                        tradeQty,
+                        tradePrice.setScale(4, RoundingMode.HALF_UP));
+                return;
+            }
+
+            long oldHoldQty = (Long) pos.get("holdQty");
+            long oldAvailableQty = (Long) pos.get("availableQty");
+            BigDecimal oldAvgCost = (BigDecimal) pos.get("avgCostPrice");
+            if (oldAvgCost == null) {
+                oldAvgCost = BigDecimal.ZERO;
+            }
+
+            long newHoldQty = oldHoldQty + tradeQty;
+            long newAvailableQty = oldAvailableQty + tradeQty;
+            BigDecimal totalCost = oldAvgCost.multiply(BigDecimal.valueOf(oldHoldQty)).add(tradeAmount);
+            BigDecimal newAvgCost = totalCost.divide(BigDecimal.valueOf(newHoldQty), 4, RoundingMode.HALF_UP);
+
+            jdbcTemplate.update(
+                    """
+                    update customer_position
+                    set hold_qty = ?, available_qty = ?, avg_cost_price = ?
+                    where customer_code = ? and market = ? and stk_code = ?
+                    """,
+                    newHoldQty,
+                    newAvailableQty,
+                    newAvgCost,
+                    customerCode,
+                    market,
+                    stkCode);
+            return;
+        }
+
+        int updatedPos = jdbcTemplate.update(
+                """
+                update customer_position
+                set hold_qty = hold_qty - ?,
+                    frozen_qty = case
+                        when frozen_qty >= ? then frozen_qty - ?
+                        else 0
+                    end
+                where customer_code = ? and market = ? and stk_code = ? and hold_qty >= ?
+                """,
+                tradeQty,
+                tradeQty,
+                tradeQty,
+                customerCode,
+                market,
+                stkCode,
+                tradeQty);
+        if (updatedPos == 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "持仓不足，无法完成卖出成交");
+        }
+
+        jdbcTemplate.update(
+                """
+                update customer_account
+                set cash_balance = cash_balance + ?
+                where customer_code = ?
+                """,
+                tradeAmount,
+                customerCode);
     }
 
     private boolean dictItemExists(String dictCode, String itemCode) {
