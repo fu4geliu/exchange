@@ -5,6 +5,7 @@ import java.math.RoundingMode;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
@@ -155,9 +156,13 @@ public class TradeController {
                 customerCode,
                 "用户撤单");
 
-        releaseFreezeOnCancel(order);
-
-        return Map.of("orderId", request.orderId(), "orderStatus", "6", "isWithdraw", "T");
+        Map<String, Object> release = releaseFreezeOnCancel(order);
+        LinkedHashMap<String, Object> response = new LinkedHashMap<>();
+        response.put("orderId", request.orderId());
+        response.put("orderStatus", "6");
+        response.put("isWithdraw", "T");
+        response.putAll(release);
+        return response;
     }
 
     @PostMapping("/execute")
@@ -196,6 +201,7 @@ public class TradeController {
 
         BigDecimal tradeAmount =
                 request.tradePrice().multiply(BigDecimal.valueOf(tradeQty)).setScale(2, RoundingMode.HALF_UP);
+        FeeBreakdown fee = calculateFees(order, tradeAmount);
 
         KeyHolder tradeKeys = new GeneratedKeyHolder();
         jdbcTemplate.update(
@@ -205,7 +211,7 @@ public class TradeController {
                             insert into trade_info
                             (order_id, customer_code, market, stk_code, trd_id, trade_price, trade_qty, trade_amount,
                              commission_fee, stamp_tax_fee, total_fee)
-                            values (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)
+                            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             Statement.RETURN_GENERATED_KEYS);
                     ps.setLong(1, request.orderId());
@@ -216,11 +222,15 @@ public class TradeController {
                     ps.setBigDecimal(6, request.tradePrice());
                     ps.setLong(7, tradeQty);
                     ps.setBigDecimal(8, tradeAmount);
+                    ps.setBigDecimal(9, fee.commissionFee());
+                    ps.setBigDecimal(10, fee.stampTaxFee());
+                    ps.setBigDecimal(11, fee.totalFee());
                     return ps;
                 },
                 tradeKeys);
 
-        settleOnExecute(order, tradeQty, request.tradePrice(), tradeAmount);
+        Map<String, Object> settlement =
+                settleOnExecute(order, tradeQty, request.tradePrice(), tradeAmount, fee.totalFee());
 
         Number tradeKey = tradeKeys.getKey();
         long newMatched = matchedQty + tradeQty;
@@ -236,12 +246,17 @@ public class TradeController {
                 nextStatus,
                 request.orderId());
 
-        return Map.of(
-                "tradeId", tradeKey != null ? tradeKey.longValue() : 0L,
-                "orderId", request.orderId(),
-                "matchedQty", newMatched,
-                "orderStatus", nextStatus,
-                "updatedAt", LocalDateTime.now().toString());
+        LinkedHashMap<String, Object> response = new LinkedHashMap<>();
+        response.put("tradeId", tradeKey != null ? tradeKey.longValue() : 0L);
+        response.put("orderId", request.orderId());
+        response.put("matchedQty", newMatched);
+        response.put("orderStatus", nextStatus);
+        response.put("updatedAt", LocalDateTime.now().toString());
+        response.put("commissionFee", fee.commissionFee());
+        response.put("stampTaxFee", fee.stampTaxFee());
+        response.put("totalFee", fee.totalFee());
+        response.putAll(settlement);
+        return response;
     }
 
     @GetMapping("/position/{customerCode}")
@@ -384,14 +399,17 @@ public class TradeController {
                 stkCode);
     }
 
-    private void releaseFreezeOnCancel(Map<String, Object> order) {
+    private Map<String, Object> releaseFreezeOnCancel(Map<String, Object> order) {
         String trdId = (String) order.get("trdId");
         long customerCode = (Long) order.get("customerCode");
         long orderQty = (Long) order.get("orderQty");
         long matchedQty = (Long) order.get("matchedQty");
         long remainQty = orderQty - matchedQty;
+        LinkedHashMap<String, Object> released = new LinkedHashMap<>();
+        released.put("releasedQty", remainQty > 0 ? remainQty : 0L);
+        released.put("releasedFunds", BigDecimal.ZERO);
         if (remainQty <= 0) {
-            return;
+            return released;
         }
 
         if ("B".equals(trdId)) {
@@ -410,7 +428,8 @@ public class TradeController {
                     releaseFunds,
                     releaseFunds,
                     customerCode);
-            return;
+            released.put("releasedFunds", releaseFunds);
+            return released;
         }
 
         String market = (String) order.get("market");
@@ -431,19 +450,23 @@ public class TradeController {
                 customerCode,
                 market,
                 stkCode);
+        return released;
     }
 
-    private void settleOnExecute(
-            Map<String, Object> order, long tradeQty, BigDecimal tradePrice, BigDecimal tradeAmount) {
+    private Map<String, Object> settleOnExecute(
+            Map<String, Object> order, long tradeQty, BigDecimal tradePrice, BigDecimal tradeAmount, BigDecimal totalFee) {
         String trdId = (String) order.get("trdId");
         long customerCode = (Long) order.get("customerCode");
         String market = (String) order.get("market");
         String stkCode = (String) order.get("stkCode");
+        LinkedHashMap<String, Object> settlement = new LinkedHashMap<>();
 
         if ("B".equals(trdId)) {
             BigDecimal orderPrice = (BigDecimal) order.get("orderPrice");
             BigDecimal unfreezeFunds =
                     orderPrice.multiply(BigDecimal.valueOf(tradeQty)).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal actualDeductFunds = tradeAmount.add(totalFee).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal refundFunds = unfreezeFunds.subtract(actualDeductFunds);
             jdbcTemplate.update(
                     """
                     update customer_account
@@ -456,8 +479,14 @@ public class TradeController {
                     """,
                     unfreezeFunds,
                     unfreezeFunds,
-                    tradeAmount,
+                    actualDeductFunds,
                     customerCode);
+
+            settlement.put("settlementType", "BUY_EXECUTE");
+            settlement.put("unfreezeFunds", unfreezeFunds);
+            settlement.put("actualDeductFunds", actualDeductFunds);
+            settlement.put("refundFunds", refundFunds.compareTo(BigDecimal.ZERO) > 0 ? refundFunds : BigDecimal.ZERO);
+            settlement.put("extraDeductFunds", refundFunds.compareTo(BigDecimal.ZERO) < 0 ? refundFunds.negate() : BigDecimal.ZERO);
 
             Map<String, Object> pos = jdbcTemplate.query(
                     """
@@ -494,7 +523,8 @@ public class TradeController {
                         tradeQty,
                         tradeQty,
                         tradePrice.setScale(4, RoundingMode.HALF_UP));
-                return;
+                settlement.put("positionDelta", tradeQty);
+                return settlement;
             }
 
             long oldHoldQty = (Long) pos.get("holdQty");
@@ -521,7 +551,8 @@ public class TradeController {
                     customerCode,
                     market,
                     stkCode);
-            return;
+            settlement.put("positionDelta", tradeQty);
+            return settlement;
         }
 
         int updatedPos = jdbcTemplate.update(
@@ -551,8 +582,65 @@ public class TradeController {
                 set cash_balance = cash_balance + ?
                 where customer_code = ?
                 """,
-                tradeAmount,
+                tradeAmount.subtract(totalFee).setScale(2, RoundingMode.HALF_UP),
                 customerCode);
+        settlement.put("settlementType", "SELL_EXECUTE");
+        settlement.put("unfreezeQty", tradeQty);
+        settlement.put("positionDelta", -tradeQty);
+        settlement.put("cashIncreased", tradeAmount.subtract(totalFee).setScale(2, RoundingMode.HALF_UP));
+        return settlement;
+    }
+
+    private FeeBreakdown calculateFees(Map<String, Object> order, BigDecimal tradeAmount) {
+        long customerCode = (Long) order.get("customerCode");
+        String market = (String) order.get("market");
+        String stkCode = (String) order.get("stkCode");
+        String trdId = (String) order.get("trdId");
+
+        Map<String, Object> meta = jdbcTemplate.query(
+                """
+                select u.cuacct_cls, s.stk_cls, s.stamp_tax_rate
+                from user_info u
+                join security_info s on s.market = ? and s.stk_code = ?
+                where u.customer_code = ?
+                """,
+                rs -> rs.next()
+                        ? Map.of(
+                                "cuacctCls", rs.getString("cuacct_cls"),
+                                "stkCls", rs.getString("stk_cls"),
+                                "stampTaxRate", rs.getBigDecimal("stamp_tax_rate"))
+                        : null,
+                market,
+                stkCode,
+                customerCode);
+        if (meta == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "佣金/印花税计算所需元数据缺失");
+        }
+
+        BigDecimal commissionRate = jdbcTemplate.query(
+                """
+                select commission_rate
+                from commission_rate
+                where cuacct_cls = ? and market = ? and stk_cls = ?
+                """,
+                rs -> rs.next() ? rs.getBigDecimal(1) : null,
+                meta.get("cuacctCls"),
+                market,
+                meta.get("stkCls"));
+        if (commissionRate == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "佣金费率未配置");
+        }
+
+        BigDecimal commissionFee = tradeAmount.multiply(commissionRate).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal stampTaxRate = (BigDecimal) meta.get("stampTaxRate");
+        if (stampTaxRate == null) {
+            stampTaxRate = BigDecimal.ZERO;
+        }
+        BigDecimal stampTaxFee = "S".equals(trdId)
+                ? tradeAmount.multiply(stampTaxRate).setScale(2, RoundingMode.HALF_UP)
+                : BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        BigDecimal totalFee = commissionFee.add(stampTaxFee).setScale(2, RoundingMode.HALF_UP);
+        return new FeeBreakdown(commissionFee, stampTaxFee, totalFee);
     }
 
     private boolean dictItemExists(String dictCode, String itemCode) {
@@ -583,4 +671,6 @@ public class TradeController {
     public record CancelRequest(Long orderId, String customerCode) {}
 
     public record ExecuteRequest(Long orderId, BigDecimal tradePrice, BigDecimal tradeQuantity) {}
+
+    private record FeeBreakdown(BigDecimal commissionFee, BigDecimal stampTaxFee, BigDecimal totalFee) {}
 }
