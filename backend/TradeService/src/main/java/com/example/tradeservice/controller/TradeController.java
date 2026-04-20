@@ -170,7 +170,7 @@ public class TradeController {
     public Map<String, Object> executeTrade(@RequestBody ExecuteRequest request) {
         Map<String, Object> order = jdbcTemplate.query(
                 """
-                select order_id, customer_code, market, stk_code, trd_id, order_price, order_qty, matched_qty
+                select order_id, customer_code, market, stk_code, trd_id, order_price, order_qty, matched_qty, order_status, is_withdraw
                 from order_info
                 where order_id = ?
                 """,
@@ -183,12 +183,19 @@ public class TradeController {
                                 "trdId", rs.getString("trd_id"),
                                 "orderPrice", rs.getBigDecimal("order_price"),
                                 "orderQty", rs.getLong("order_qty"),
-                                "matchedQty", rs.getLong("matched_qty"))
+                                "matchedQty", rs.getLong("matched_qty"),
+                                "orderStatus", rs.getString("order_status"),
+                                "isWithdraw", rs.getString("is_withdraw"))
                         : null,
                 request.orderId());
 
         if (order == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "委托不存在");
+        }
+        String status = (String) order.get("orderStatus");
+        String isWithdraw = (String) order.get("isWithdraw");
+        if ("T".equals(isWithdraw) || "6".equals(status) || "8".equals(status) || "9".equals(status)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "当前委托状态不允许成交");
         }
 
         long orderQty = (Long) order.get("orderQty");
