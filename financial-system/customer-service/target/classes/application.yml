@@ -1,0 +1,22 @@
+server:
+  port: 9081
+
+spring:
+  application:
+    name: customer-service
+  datasource:
+    url: jdbc:mysql://localhost:3306/exchange?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: 123456
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      database: 0
+      timeout: 5s
+
+mybatis:
+  mapper-locations: classpath:mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.qianhua.customer.mapper.CustomerPositionMapper">
+
+    <insert id="insert">
+        INSERT INTO customer_position (customer_code, market, stk_code, stk_name, hold_qty, available_qty, frozen_qty, avg_cost_price)
+        VALUES (#{customerCode}, #{market}, #{stkCode}, #{stkName}, #{holdQty}, #{availableQty}, 0, 0)
+    </insert>
+</mapper>

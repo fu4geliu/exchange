@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.qianhua.customer.mapper.SysAccountMapper">
+
+    <select id="findByUsername" resultType="com.qianhua.customer.entity.SysAccount">
+        SELECT account_id, username, password, role, ref_id, status, created_time, updated_time
+        FROM sys_account
+        WHERE username = #{username}
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="accountId">
+        INSERT INTO sys_account (username, password, role, ref_id, status)
+        VALUES (#{username}, #{password}, #{role}, #{refId}, #{status})
+    </insert>
+</mapper>

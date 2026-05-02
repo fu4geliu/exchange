@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.qianhua.customer.mapper.CustomerTemplateMapper">
+
+    <select id="findByCuacctCls" resultType="com.qianhua.customer.entity.CustomerTemplate">
+        SELECT cuacct_cls, cash_balance,
+               stk_code_1 AS stkCode1, stk_balance_1 AS stkBalance1,
+               stk_code_2 AS stkCode2, stk_balance_2 AS stkBalance2,
+               stk_code_3 AS stkCode3, stk_balance_3 AS stkBalance3
+        FROM customer_template
+        WHERE cuacct_cls = #{cuacctCls}
+    </select>
+</mapper>

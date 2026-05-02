@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.qianhua.customer.mapper.UserInfoMapper">
+
+    <select id="countByIdNo" resultType="int">
+        SELECT COUNT(1) FROM user_info WHERE id_no = #{idNo}
+    </select>
+
+    <select id="countByCustomerCode" resultType="int">
+        SELECT COUNT(1) FROM user_info WHERE customer_code = #{customerCode}
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="userId">
+        INSERT INTO user_info (customer_code, user_name, id_type, id_no, cuacct_cls, cuacct_status)
+        VALUES (#{customerCode}, #{userName}, #{idType}, #{idNo}, #{cuacctCls}, #{cuacctStatus})
+    </insert>
+
+    <select id="selectAll" resultType="com.qianhua.customer.entity.UserInfo">
+        SELECT user_id, customer_code, user_name, id_type, id_no, cuacct_cls, cuacct_status, created_time, updated_time
+        FROM user_info
+        ORDER BY created_time DESC
+    </select>
+</mapper>

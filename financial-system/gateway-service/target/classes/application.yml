@@ -1,0 +1,39 @@
+server:
+  port: 9080
+
+spring:
+  application:
+    name: gateway-service
+  cloud:
+    gateway:
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOrigins: "*"
+            allowedMethods: "*"
+            allowedHeaders: "*"
+      routes:
+        - id: api-customer-service
+          uri: http://localhost:9081
+          predicates:
+            - Path=/api/customer/**
+          filters:
+            - StripPrefix=1
+        - id: api-trade-service
+          uri: http://localhost:9082
+          predicates:
+            - Path=/api/trade/**
+          filters:
+            - StripPrefix=1
+        - id: api-market-service
+          uri: http://localhost:9083
+          predicates:
+            - Path=/api/market/**
+          filters:
+            - StripPrefix=1
+gateway:
+  auth:
+    whitelist:
+      - /api/customer/login
+      - /api/market/health
+      - /api/customer/health
